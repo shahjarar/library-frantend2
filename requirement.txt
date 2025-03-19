@@ -1,0 +1,4 @@
+﻿streamlit
+requests
+pillow
+html5lib
