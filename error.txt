@@ -1,0 +1,333 @@
+yar me thak gae hun ek k bad ek masla me tumhy sare files ka code send ker rahe hun frontend backend ki tum sub ko set ker k final code dy do or plz sary masly hal kerdena ab
+
+backend/main.py
+from fastapi import FastAPI
+from database import engine, Base
+import routes.book_routes as book_routes
+
+app = FastAPI()
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,  
+
+backend/models/user.py
+from sqlalchemy import Column, Integer, String
+from database import Base
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True)
+    username = Column(String, unique=True, index=True)
+    password = Column(String)
+backend/models/books.py
+from sqlalchemy import Column, Integer, String
+from database import Base
+
+class Book(Base):
+    __tablename__ = "books"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, index=True)
+    author = Column(String)
+    year = Column(Integer)  # Keep SQLAlchemy fields in the ORM model
+    genre = Column(String)
+    is_read = Column(bool, default=False)
+backend/routes/user_routes.py
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from database import SessionLocal
+import models.user as models
+import schemas
+from passlib.hash import bcrypt
+
+router = APIRouter()
+
+# Database session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# User Signup
+@router.post("/signup", response_model=schemas.UserResponse)
+def signup(user: schemas.UserCreate, db: Session = Depends(get_db)):
+    hashed_password = bcrypt.hash(user.password)
+    db_user = models.User(email=user.email, username=user.username, password=hashed_password)
+    
+    existing_user = db.query(models.User).filter(models.User.email == user.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+# User Login
+@router.post("/login")
+def login(user: schemas.UserLogin, db: Session = Depends(get_db)):
+    db_user = db.query(models.User).filter(
+        (models.User.email == user.email) | (models.User.username == user.username)
+    ).first()
+
+    if not db_user or not bcrypt.verify(user.password, db_user.password):
+        raise HTTPException(status_code=400, detail="Invalid credentials")
+
+    return {"message": "Login successful", "user": db_user.username}
+backed/routes/book_routes.py
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+import models.book as models
+import schemas
+from database import SessionLocal
+
+router = APIRouter()
+
+# Database session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@router.post("/books/", response_model=schemas.BookResponse)
+def create_book(book: schemas.BookCreate, db: Session = Depends(get_db)):
+    db_book = models.Book(**book.dict())
+    db.add(db_book)
+    db.commit()
+    db.refresh(db_book)
+    return db_book
+
+@router.get("/books/", response_model=list[schemas.BookResponse])
+def get_books(db: Session = Depends(get_db)):
+    return db.query(models.Book).all()
+backend/database.py
+from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+
+DATABASE_URL = "sqlite:///./books.db"  # Ya PostgreSQL ka URL use kar sakte hain
+
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+Base = declarative_base()
+frontend/app.py
+import streamlit as st
+import requests
+import time
+
+BASE_URL = "http://127.0.0.1:8000/api"
+
+# ---- Background Animation ----
+def set_background():
+    page_bg = """
+    <style>
+    body {
+        background-image: url('https://source.unsplash.com/1600x900/?library,books');
+        background-size: cover;
+        background-attachment: fixed;
+        animation: gradientBG 10s ease infinite;
+    }
+    @keyframes gradientBG {
+        0% {opacity: 1;}
+        50% {opacity: 0.8;}
+        100% {opacity: 1;}
+    }
+    </style>
+    """
+    st.markdown(page_bg, unsafe_allow_html=True)
+
+# ---- Sign Up UI ----
+def signup_ui():
+    set_background()
+    st.title("🔒 Sign Up")
+    new_email = st.text_input("Email")
+    new_username = st.text_input("Choose a Username")
+    new_password = st.text_input("Choose a Password", type="password")
+
+    if st.button("Sign Up"):
+        response = requests.post(f"{BASE_URL}/signup", json={
+            "email": new_email,
+            "username": new_username,
+            "password": new_password
+        })
+
+        if response.status_code == 200:
+            st.success("Account created successfully. Please log in.")
+            st.session_state["show_login"] = True
+        else:
+            st.error(response.json().get("detail", "Error signing up."))
+
+# ---- Login UI ----
+def login_ui():
+    set_background()
+    st.title("🔑 Login to Your Library")
+    login_input = st.text_input("Email or Username")
+    password = st.text_input("Password", type="password")
+
+    if st.button("Login"):
+        response = requests.post(f"{BASE_URL}/login", json={
+            "email": login_input,
+            "username": login_input,
+            "password": password
+        })
+
+        if response.status_code == 200:
+            st.session_state["logged_in"] = True
+            st.session_state["username"] = login_input
+            st.rerun()
+        else:
+            st.error(response.json().get("detail", "Invalid credentials!"))
+
+# ---- Bookshelf UI ----
+def bookshelf_ui():
+    set_background()
+    st.title("📚 Personal Library")
+    if st.sidebar.button("Logout"):
+        st.session_state.clear()
+        st.rerun()
+
+    search_query = st.text_input("🔍 Search for a book:")
+    books = []
+
+    response = requests.get(f"{BASE_URL}/books")
+    if response.status_code == 200:
+        books = response.json()
+
+    # If no books found, search Google Books API
+    if not books and search_query:
+        google_api_url = f"https://www.googleapis.com/books/v1/volumes?q={search_query}"
+        google_response = requests.get(google_api_url)
+        google_books = google_response.json().get("items", [])
+        for gbook in google_books:
+            title = gbook.get("volumeInfo", {}).get("title", "Unknown")
+            authors = ", ".join(gbook.get("volumeInfo", {}).get("authors", ["Unknown"]))
+            books.append({"title": title, "author": authors})
+
+    if not books:
+        st.warning("No books found. Add some books!")
+    else:
+        for book in books:
+            if isinstance(book, dict):
+                title = book.get("title", "Unknown")
+                author = book.get("author", "Unknown")
+            else:
+                title, author = book[:2]  # If tuple
+            st.markdown(f"**📖 {title}** by {author}")
+
+    # ---- Add Book ----
+    st.write("### ➕ Add a Book")
+    new_title = st.text_input("Title")
+    new_author = st.text_input("Author")
+    new_year = st.text_input("Year")
+    new_genre = st.text_input("Genre")
+    is_read = st.checkbox("Mark as Read")
+
+    if st.button("Add Book 📚"):
+        response = requests.post(f"{BASE_URL}/books", json={
+            "title": new_title,
+            "author": new_author,
+            "year": new_year,
+            "genre": new_genre,
+            "is_read": is_read
+        })
+
+        if response.status_code == 200:
+            with st.spinner("📖 Adding book to shelf..."):
+                time.sleep(1)
+                st.success(f"✅ '{new_title}' added to the bookshelf!")
+                st.rerun()
+
+    # ---- Remove Book ----
+    st.write("### ❌ Remove a Book")
+    remove_title = st.text_input("Book to Remove")
+
+    if st.button("Remove 🗑️"):
+        if remove_title:
+            with st.spinner("📖 Removing book from shelf..."):
+                time.sleep(1)
+                response = requests.delete(f"{BASE_URL}/books", json={"title": remove_title})
+
+                if response.status_code == 200:
+                    st.success(f"✅ '{remove_title}' removed successfully!")
+                    st.rerun()
+                else:
+                    st.error(f"❌ {response.json().get('detail', 'Book not found!')}")
+        else:
+            st.warning("⚠️ Please enter a book title to remove.")
+
+# ---- Main App Logic ----
+if "logged_in" not in st.session_state:
+    st.session_state["logged_in"] = False
+if "show_login" not in st.session_state:
+    st.session_state["show_login"] = True
+
+if not st.session_state["logged_in"]:
+    if st.radio("", ["Sign Up", "Login"], horizontal=True) == "Login":
+        login_ui()
+    else:
+        signup_ui()
+else:
+    bookshelf_ui() 
+    allow_origins=["*"],  # Yahan frontend ka exact URL daal sakte ho
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Database Tables Create
+Base.metadata.create_all(bind=engine)
+
+# Routes Include
+app.include_router(book_routes.router, prefix="/api")
+
+@app.get("/")
+def home():
+    return {"message": "Welcome to the Library Management System"}  
+
+backend/schemas.py
+from pydantic import BaseModel
+from sqlalchemy import Column, Integer
+
+# 📚 Book Schemas (Sahi Wala)
+class BookBase(BaseModel):
+    title: str
+    author: str
+    year = int  # ✅ Add this line if you want to use 'year'
+    genre: str
+    is_read: bool = False
+
+class BookCreate(BookBase):
+    pass
+
+class BookResponse(BookBase):
+    id: int
+
+    class Config:
+        orm_mode = True
+
+# 👤 User Schemas (Jo Pehle Se The, Unme Koi Issue Nahi)
+class UserCreate(BaseModel):
+    email: str
+    username: str
+    password: str
+
+class UserLogin(BaseModel):
+    email: str = None
+    username: str = None
+    password: str
+
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    username: str
+
+    class Config:
+        orm_mode = True
